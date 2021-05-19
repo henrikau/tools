@@ -154,9 +154,7 @@ int main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	struct timespec ts_ptp;
-	struct timespec ts_mono;
-	unsigned long long start, end, diff_mono, diff_ptp;
+	struct timespec ts_real, ts_ptp;
 	FILE *fp = NULL;
 	if (strlen(logfile) > 0) {
 		fp = fopen(logfile, "w+");
@@ -164,7 +162,7 @@ int main(int argc, char *argv[])
 			perror("Failed opening file");
 			exit(EXIT_FAILURE);
 		}
-		fprintf(fp, "clock_realtime_s,tsc_real,tsc_ptp,clock_diff_s\n");
+		fprintf(fp, "clock_realtime_s,tsc_real,tsc_ptp,tsc_tot,clock_diff_s\n");
 	}
 
 	if (!set_rr(80))
@@ -173,6 +171,7 @@ int main(int argc, char *argv[])
 	for (size_t i = 0; i < loops; i++) {
 		/* Get rusage */
 		struct rusage rstart,rend;
+		unsigned long long start_r, start_p, end, diff_real, diff_ptp;
 		if (getrusage(RUSAGE_THREAD, &rstart)) {
 			perror("failed to get rusage (start), breaking loop");
 			ret = -1;
@@ -180,15 +179,15 @@ int main(int argc, char *argv[])
 			continue;
 		}
 
-		get_tsc(&start);
-		clock_gettime(CLOCK_REALTIME, &ts_mono);
+		get_tsc(&start_r);
+		clock_gettime(CLOCK_REALTIME, &ts_real);
 		get_tsc(&end);
-		diff_mono = end-start;
+		diff_real = end-start_r;
 
-		get_tsc(&start);
+		get_tsc(&start_p);
 		clock_gettime(get_clockid(ptp_fd), &ts_ptp);
 		get_tsc(&end);
-		diff_ptp = end-start;
+		diff_ptp = end-start_p;
 
 		/* Get rusage, make sure we haven't been preempted */
 		if (getrusage(RUSAGE_THREAD, &rend)) {
@@ -197,22 +196,30 @@ int main(int argc, char *argv[])
 			loops = -1;
 			continue;
 		}
+
 		if (rstart.ru_nsignals != rend.ru_nsignals ||
 			rstart.ru_nvcsw != rend.ru_nvcsw ||
 			rstart.ru_nivcsw != rend.ru_nivcsw) {
-			fprintf(stderr, "signals or contextswitches increaded during run, ignoring this run\n");
+			fprintf(stderr, "signals or contextswitches increased during run, ignoring."
+				"signals %ld:%ld, nvcsw %ld:%ld nivcsw %ld:%ld\n",
+				rstart.ru_nsignals, rend.ru_nsignals,
+				rstart.ru_nvcsw, rend.ru_nvcsw,
+				rstart.ru_nivcsw, rend.ru_nivcsw);
 			continue;
 		}
 
-		long long d = ts_diff(&ts_mono, &ts_ptp);
+		long long d = ts_diff(&ts_real, &ts_ptp);
 		if (fp > 0)
-			fprintf(fp, "%ld.%ld,%llu,%llu,%f\n", ts_mono.tv_sec, ts_mono.tv_nsec, diff_mono, diff_ptp, d/1e9);
+			fprintf(fp, "%ld.%ld,%llu,%llu,%lld,%f\n",
+				ts_real.tv_sec, ts_real.tv_nsec,
+				diff_real, diff_ptp,
+				end - start_r,
+				d / 1e9);
 
 		if (!(i%(US_IN_S / TIMEOUT_US))) {
-			printf("real: %lu %lu\nptp : %lu %lu\ndiff: %lld\n",
-				ts_mono.tv_sec, ts_mono.tv_nsec,
-				ts_ptp.tv_sec, ts_ptp.tv_nsec,
-				d);
+			printf("real: %lu %lu\nptp : %lu %lu\ndiff: %lld (%lld)\n",
+				ts_real.tv_sec, ts_real.tv_nsec,
+				ts_ptp.tv_sec, ts_ptp.tv_nsec, d, end-start_r);
 		}
 
 		usleep(TIMEOUT_US);
