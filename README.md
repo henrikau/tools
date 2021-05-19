@@ -43,15 +43,19 @@ This runs for 100k iterations (1ms period) using PTP clock on eth2 and
 stores the output to ptp_clock.csv on the format
 
 ``` text
-$ head ptp_clock.csv
-clock_realtime_s,tsc_real,tsc_ptp,clock_diff_s
-1621414876.139971814,25536,32338,37.000005
-1621414876.141000278,342,27322,37.000004
-1621414876.142012783,228,27132,37.000004
-1621414876.143024578,190,27246,37.000004
-1621414876.144036753,494,27208,37.000004
-1621414876.145048237,228,27018,37.000004
-1621414876.146059562,190,27132,37.000004
-1621414876.147072207,532,32072,37.000005
-1621414876.148542319,3876,40660,37.000007
+$ head -n5 ptp_clock.csv
+clock_realtime_s,tsc_real,tsc_ptp,tsc_tot,clock_diff_s
+1621430653.394576669,5334,248738,254092,37.000011
+1621430653.395801327,412,210022,210454,37.000017
+1621430653.397008828,434,170504,170956,37.000017
+1621430653.398176339,448,78544,79012,37.000017
 ```
+
+- clock_realtime: timestamp of system. Ideally synchronized using
+  phc2sys from ptp timestamp.
+- tsc_real: Number of CPU cycles from start to end of reading
+  CLOCK_REALTIME
+- tsc_ptp: Number of CPU cycles from start to end of reading the PTP
+  clock via PCIe
+- tsc_tot: Number of CPU cycles spent reading '''both''' clock sources
+- clock_diff_s: Difference between system clock and PTP time (TAI)
