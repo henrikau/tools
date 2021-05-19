@@ -32,40 +32,20 @@
 #define NS_IN_SEC (1000 * US_IN_SEC)
 #define OUTFILESZ 256
 
-#include <unistd.h>
-#include <sys/syscall.h>
-#include <linux/sched.h>
+#include <sched.h>
 #include <stdbool.h>
-#include <inttypes.h>
 
-struct sched_attr {
-        uint32_t size;
-        uint32_t sched_policy;
-        uint64_t sched_flags;
-
-        /* SCHED_NORMAL, SCHED_BATCH */
-        int32_t sched_nice;
-        /* SCHED_FIFO, SCHED_RR */
-        uint32_t sched_priority;
-        /* SCHED_DEADLINE */
-        uint64_t sched_runtime;
-        uint64_t sched_deadline;
-        uint64_t sched_period;
-};
-static bool set_deadline(uint64_t runtime_ns, uint64_t dl_ns, uint64_t period_ns)
+static bool set_rr(int pri)
 {
-    unsigned int flags = 0;
-    struct sched_attr attr;
-    attr.size = sizeof(struct sched_attr);
-    attr.sched_flags	= 0;
-    attr.sched_nice	= 0;
-    attr.sched_priority	= 0;
-    attr.sched_policy	= 6; // SCHED_DEADLINE
-    attr.sched_runtime  = runtime_ns;
-    attr.sched_deadline = dl_ns;
-    attr.sched_period   = period_ns;
-    return syscall(314, 0, &attr, flags) == 0;
+	struct sched_param param;
+	param.sched_priority = pri;
+	if (sched_setscheduler(0, SCHED_RR, &param)) {
+		perror("Failed setting sched_rr");
+		return false;
+	}
+	return true;
 }
+
 
 /*
  * Get clockid, take get_clockid() from
@@ -187,11 +167,8 @@ int main(int argc, char *argv[])
 		fprintf(fp, "clock_realtime_s,tsc_real,tsc_ptp,clock_diff_s\n");
 	}
 
-	if (!set_deadline((TIMEOUT_US*1000)>>1, TIMEOUT_US*1000, TIMEOUT_US*1000)) {
-		fprintf(stderr, "Failed moving to deadline\n");
-		ret = -1;
-		goto out;
-	}
+	if (!set_rr(80))
+		exit(EXIT_FAILURE);
 
 	for (size_t i = 0; i < loops; i++) {
 		/* Get rusage */
@@ -240,7 +217,7 @@ int main(int argc, char *argv[])
 
 		usleep(TIMEOUT_US);
 	}
-	out:
+
 	fclose(fp);
 	close(ptp_fd);
 	return ret;
