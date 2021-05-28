@@ -30,12 +30,14 @@ bus. AFAIK, there's no way to prioritize traffic in PCIe, so a NIC clock
 accurate to within "a few hundred ns" will not be as accurate for the
 system.
 
-pcie_clock is fairly simple, it reads TSC before and after reading
-both CLOCK_REALTIME and ptp_fd. It attempts to reduce the interference
-from other tasks by running as sched_deadline. For further accuracy, the
-task should be shielded using cpuset (cset is useful!).
+pcie_clock is fairly simple, it reads TSC before and after reading both
+CLOCK_REALTIME and ptp_fd. It attempts to reduce the interference from
+other tasks by running as sched_rr with priority 80. For further
+accuracy, the task should be shielded using cpuset (cset is useful!).
 
 ```
+sudo cset shield -c 3 -k on
+sudo cset shield -s -p $$
 sudo ./build/pcie_clock -i eth2 -l 100000 -o ptp_clock.csv
 ```
 
@@ -44,11 +46,11 @@ stores the output to ptp_clock.csv on the format
 
 ``` text
 $ head -n5 ptp_clock.csv
-clock_realtime_s,tsc_real,tsc_ptp,tsc_tot,clock_diff_s
-1621430653.394576669,5334,248738,254092,37.000011
-1621430653.395801327,412,210022,210454,37.000017
-1621430653.397008828,434,170504,170956,37.000017
-1621430653.398176339,448,78544,79012,37.000017
+clock_realtime_s,tsc_real,tsc_ptp,real_ptp_ns,tsc_tot,real_tot_ns,clock_diff_s
+1622195516.771866610,11918,29422,8683,41512,8745,36.999965
+1622195516.772891545,434,31142,9161,31662,9183,36.999967
+1622195516.773906788,480,26566,7832,27144,7875,36.999965
+1622195516.774921432,484,35910,10572,36494,10615,36.999965
 ```
 
 - clock_realtime: timestamp of system. Ideally synchronized using
@@ -57,5 +59,9 @@ clock_realtime_s,tsc_real,tsc_ptp,tsc_tot,clock_diff_s
   CLOCK_REALTIME
 - tsc_ptp: Number of CPU cycles from start to end of reading the PTP
   clock via PCIe
+- real_ptp_ns: elapsed system time measured using CLOCK_REALTIME to
+  provide a stable mapping for TSC to actual time (think frequency scaling)
 - tsc_tot: Number of CPU cycles spent reading '''both''' clock sources
+- real_tot_ns: total time (CLOCK_REALTIME) for all accesses, kept for
+  sanitycheck.
 - clock_diff_s: Difference between system clock and PTP time (TAI)
