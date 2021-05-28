@@ -154,7 +154,7 @@ int main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	struct timespec ts_real, ts_ptp;
+	struct timespec ts_real_a, ts_real_b, ts_real_c, ts_ptp;
 	FILE *fp = NULL;
 	if (strlen(logfile) > 0) {
 		fp = fopen(logfile, "w+");
@@ -162,7 +162,7 @@ int main(int argc, char *argv[])
 			perror("Failed opening file");
 			exit(EXIT_FAILURE);
 		}
-		fprintf(fp, "clock_realtime_s,tsc_real,tsc_ptp,tsc_tot,clock_diff_s\n");
+		fprintf(fp, "clock_realtime_s,tsc_real,tsc_ptp,real_ptp_ns,tsc_tot,real_tot_ns,clock_diff_s\n");
 	}
 
 	if (!set_rr(80))
@@ -171,7 +171,7 @@ int main(int argc, char *argv[])
 	for (size_t i = 0; i < loops; i++) {
 		/* Get rusage */
 		struct rusage rstart,rend;
-		unsigned long long start_r, start_p, end, diff_real, diff_ptp;
+		unsigned long long start_r = 0, start_p = 0, end_r = 0, end_p = 0;
 		if (getrusage(RUSAGE_THREAD, &rstart)) {
 			perror("failed to get rusage (start), breaking loop");
 			ret = -1;
@@ -180,14 +180,17 @@ int main(int argc, char *argv[])
 		}
 
 		get_tsc(&start_r);
-		clock_gettime(CLOCK_REALTIME, &ts_real);
-		get_tsc(&end);
-		diff_real = end-start_r;
+		clock_gettime(CLOCK_REALTIME, &ts_real_a);
+		get_tsc(&end_r);
 
+		clock_gettime(CLOCK_REALTIME, &ts_real_b);
+
+		/* Count cy */
 		get_tsc(&start_p);
 		clock_gettime(get_clockid(ptp_fd), &ts_ptp);
-		get_tsc(&end);
-		diff_ptp = end-start_p;
+		get_tsc(&end_p);
+
+		clock_gettime(CLOCK_REALTIME, &ts_real_c);
 
 		/* Get rusage, make sure we haven't been preempted */
 		if (getrusage(RUSAGE_THREAD, &rend)) {
@@ -196,6 +199,9 @@ int main(int argc, char *argv[])
 			loops = -1;
 			continue;
 		}
+
+		unsigned long long diff_real = end_r - start_r;
+		unsigned long long diff_ptp = end_p - start_p;
 
 		if (rstart.ru_nsignals != rend.ru_nsignals ||
 			rstart.ru_nvcsw != rend.ru_nvcsw ||
@@ -208,18 +214,29 @@ int main(int argc, char *argv[])
 			continue;
 		}
 
-		long long d = ts_diff(&ts_real, &ts_ptp);
+		long long diff_clocks = ts_diff(&ts_real_a, &ts_ptp);
+		long long diff_ab = ts_diff(&ts_real_a, &ts_real_b);
+		long long diff_bc = ts_diff(&ts_real_b, &ts_real_c);
+		long long diff_ac = ts_diff(&ts_real_a, &ts_real_c);
+
 		if (fp > 0)
-			fprintf(fp, "%ld.%ld,%llu,%llu,%lld,%f\n",
-				ts_real.tv_sec, ts_real.tv_nsec,
-				diff_real, diff_ptp,
-				end - start_r,
-				d / 1e9);
+			fprintf(fp, "%ld.%ld,%llu,%llu,%lld,%llu,%lld,%f\n",
+				ts_real_a.tv_sec, ts_real_a.tv_nsec,/* clock_realtime */
+				diff_real,	/* tsc_real */
+				diff_ptp,	/* tsc_ptp */
+				diff_bc,	/* real_ptp_ns */
+				end_p - start_r,/* tsc_tot */
+				diff_ac,	/* real_tot_ns */
+				diff_clocks / 1e9);	/* clock_diff */
 
 		if (!(i%(US_IN_S / TIMEOUT_US))) {
-			printf("real: %lu %lu\nptp : %lu %lu\ndiff: %lld (%lld)\n",
-				ts_real.tv_sec, ts_real.tv_nsec,
-				ts_ptp.tv_sec, ts_ptp.tv_nsec, d, end-start_r);
+			printf("real: %lu %lu (tsc: %llu, ns: %lld)\n"
+				"ptp : %lu %lu (tsc: %llu, ns: %lld)\n"
+				"diff: %lld (%llu)\n",
+				ts_real_a.tv_sec, ts_real_a.tv_nsec, diff_real, diff_ab,
+				ts_ptp.tv_sec, ts_ptp.tv_nsec, diff_ptp, diff_bc,
+				diff_clocks,
+				end_p-start_r);
 		}
 
 		usleep(TIMEOUT_US);
