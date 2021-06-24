@@ -74,13 +74,22 @@ long long ts_diff(struct timespec *a, struct timespec *b)
 }
 
 
+/* Keep track of time */
+static unsigned long long max_ns = 0;
+static unsigned long long min_ns = -1;
+static unsigned long long tot_ns = 0;
+static unsigned long long n = 0;
+
 static char logfile[OUTFILESZ] = { 0 };
 static char ifname[IFNAMSIZ] = {0};
 static int loops = 1000;
+static unsigned long long breakval = NS_IN_SEC;
+
 static struct argp_option options[] = {
 	{"iface", 'i', "IFACE", 0, "Interface to use" },
 	{"loops", 'l', "LOOPS", 0, "Number of loops to run (-1: default, infinite)"},
 	{"out", 'o', "OUTFILE", 0, "File to store output to (csv-format)"},
+	{"break", 'b', "TIMEOUT_US", 0, "Threshold (us) for stopping execution (and trace)"},
 	{0}
 };
 static error_t parser(int key, char *arg, struct argp_state *state)
@@ -88,6 +97,14 @@ static error_t parser(int key, char *arg, struct argp_state *state)
 	int tmp;
 
 	switch(key) {
+	case 'b':
+		tmp = atoi(arg);
+		if (tmp < 0 || tmp > US_IN_SEC) {
+			fprintf(stderr, "Invalid break-value (%d)\n", tmp);
+			break;
+		}
+		breakval = tmp * 1000;
+		break;
 	case 'i':
 		strncpy(ifname, arg, IFNAMSIZ-1);
 		break;
@@ -107,14 +124,9 @@ static error_t parser(int key, char *arg, struct argp_state *state)
 }
 static struct argp argp = { options, parser };
 
-static unsigned long long max_ns = 0;
-static unsigned long long min_ns = -1;
-static unsigned long long tot_ns = 0;
-static unsigned long long n = 0;
 void print_res(unsigned long long real,
 	unsigned long long ptp, unsigned long long diff_clocks)
 {
-	static int pctr = 0;
 	/* real, ptp: cur | min | max | avg
 	  */
 	if (ptp > max_ns)
@@ -125,14 +137,15 @@ void print_res(unsigned long long real,
 	n++;
 
 	if (!(n % 10)) {
-		pctr++;
-		printf("\r%09llu (%03d) real: %.3f us, ptp: %.3f us max: %.3f us min: %.3f us avg: %.3f us",
-			n, pctr,
+		printf("\r%09llu real: %.3f us, ptp: %.3f us max: %.3f us min: %.3f us avg: %.3f us (diff: %.6f)",
+			n,
 			(double)real / 1000.0,
 			(double)ptp / 1000.0,
 			(double)max_ns / 1000.0,
 			(double)min_ns / 1000.0,
-			(double)tot_ns / n / 1000.0);
+			(double)tot_ns / n / 1000.0,
+			(double)diff_clocks / 1e9);
+
 		fflush(stdout);
 	}
 }
@@ -197,6 +210,9 @@ int main(int argc, char *argv[])
 	/* show info */
 	printf("iface: %s, ptp_path: %s\n", ifname, ptp_path);
 	printf("SCHED_RR:80, loops: %d\n", loops);
+
+	unsigned long long diff_real = 0;
+	unsigned long long diff_ptp = 0;
 	for (size_t i = 0; i < loops; i++) {
 		/* Get rusage */
 		struct rusage rstart,rend;
@@ -211,15 +227,16 @@ int main(int argc, char *argv[])
 		get_tsc(&start_r);
 		clock_gettime(CLOCK_REALTIME, &ts_real_a);
 		get_tsc(&end_r);
-
 		clock_gettime(CLOCK_REALTIME, &ts_real_b);
+		diff_real = end_r - start_r;
+
 
 		/* Count cycles */
 		get_tsc(&start_p);
 		clock_gettime(get_clockid(ptp_fd), &ts_ptp);
 		get_tsc(&end_p);
-
 		clock_gettime(CLOCK_REALTIME, &ts_real_c);
+		diff_ptp = end_p - start_p;
 
 		/* Get rusage, make sure we haven't been preempted */
 		if (getrusage(RUSAGE_THREAD, &rend)) {
@@ -239,14 +256,11 @@ int main(int argc, char *argv[])
 				rstart.ru_nivcsw, rend.ru_nivcsw);
 			continue;
 		}
-		unsigned long long diff_real = end_r - start_r;
-		unsigned long long diff_ptp = end_p - start_p;
+
+		/* Extra diffs for logging to file */
 		long long diff_clocks = ts_diff(&ts_real_a, &ts_ptp);
-		/* long long diff_ab = ts_diff(&ts_real_a, &ts_real_b); */
 		long long diff_bc = ts_diff(&ts_real_b, &ts_real_c);
 		long long diff_ac = ts_diff(&ts_real_a, &ts_real_c);
-
-
 		if (fp > 0)
 			fprintf(fp, "%ld.%ld,%llu,%llu,%lld,%llu,%lld,%f\n",
 				ts_real_a.tv_sec, ts_real_a.tv_nsec,/* clock_realtime */
@@ -258,11 +272,24 @@ int main(int argc, char *argv[])
 				diff_clocks / 1e9);	/* clock_diff */
 
 		print_res(diff_real, diff_ptp, diff_clocks);
+		if (diff_ptp > breakval) {
+			fprintf(stderr, "\n\nBreakvalue (%llu) exceeded (%llu) after %ld iterations, stopping.\n", breakval, diff_ptp, i);
 
+
+			i = loops + 1;
+			continue;
+		}
 		usleep(TIMEOUT_US);
 	}
 
-	printf("\n");
+	fprintf(stderr, "\n%09llu real: %.3f us, ptp: %.3f us max: %.3f us min: %.3f us avg: %.3f us\n",
+		n,
+		(double)diff_real / 1000.0,
+		(double)diff_ptp / 1000.0,
+		(double)max_ns / 1000.0,
+		(double)min_ns / 1000.0,
+		(double)tot_ns / n / 1000.0);
+
 	fclose(fp);
 	close(ptp_fd);
 	return ret;
