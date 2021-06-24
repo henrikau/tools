@@ -25,7 +25,6 @@
 #include <sys/resource.h>
 
 #define PTP_MAX_DEV_PATH 16
-#define US_IN_S 1000000
 #define TIMEOUT_US 1000
 #define MS_IN_SEC 1000
 #define US_IN_SEC (1000 * MS_IN_SEC)
@@ -74,6 +73,7 @@ long long ts_diff(struct timespec *a, struct timespec *b)
 	return b_ns - a_ns;
 }
 
+
 static char logfile[OUTFILESZ] = { 0 };
 static char ifname[IFNAMSIZ] = {0};
 static int loops = 1000;
@@ -107,6 +107,36 @@ static error_t parser(int key, char *arg, struct argp_state *state)
 }
 static struct argp argp = { options, parser };
 
+static unsigned long long max_ns = 0;
+static unsigned long long min_ns = -1;
+static unsigned long long tot_ns = 0;
+static unsigned long long n = 0;
+void print_res(unsigned long long real,
+	unsigned long long ptp, unsigned long long diff_clocks)
+{
+	static int pctr = 0;
+	/* real, ptp: cur | min | max | avg
+	  */
+	if (ptp > max_ns)
+		max_ns = ptp;
+	if (ptp < min_ns)
+		min_ns = ptp;
+	tot_ns += ptp;
+	n++;
+
+	if (!(n % 10)) {
+		pctr++;
+		printf("\r%09llu (%03d) real: %.3f us, ptp: %.3f us max: %.3f us min: %.3f us avg: %.3f us",
+			n, pctr,
+			(double)real / 1000.0,
+			(double)ptp / 1000.0,
+			(double)max_ns / 1000.0,
+			(double)min_ns / 1000.0,
+			(double)tot_ns / n / 1000.0);
+		fflush(stdout);
+	}
+}
+
 int main(int argc, char *argv[])
 {
 	int ret = 0;
@@ -118,8 +148,6 @@ int main(int argc, char *argv[])
 
 	if (strlen(logfile) == 0)
 		strncpy(logfile, "hack_ptp.csv", OUTFILESZ-1);
-
-	printf("Using iface %s \n", ifname);
 
 	/* Get PHC index */
 	struct ifreq req;
@@ -146,7 +174,6 @@ int main(int argc, char *argv[])
 	char ptp_path[PTP_MAX_DEV_PATH] = {0};
 	snprintf(ptp_path, sizeof(ptp_path), "%s%d", "/dev/ptp",
 		interface_info.phc_index);
-	printf("ptp_path: %s\n", ptp_path);
 
 	int ptp_fd = open(ptp_path, O_RDONLY);
 	if (ptp_fd < 0) {
@@ -167,7 +194,9 @@ int main(int argc, char *argv[])
 
 	if (!set_rr(80))
 		exit(EXIT_FAILURE);
-
+	/* show info */
+	printf("iface: %s, ptp_path: %s\n", ifname, ptp_path);
+	printf("SCHED_RR:80, loops: %d\n", loops);
 	for (size_t i = 0; i < loops; i++) {
 		/* Get rusage */
 		struct rusage rstart,rend;
@@ -185,7 +214,7 @@ int main(int argc, char *argv[])
 
 		clock_gettime(CLOCK_REALTIME, &ts_real_b);
 
-		/* Count cy */
+		/* Count cycles */
 		get_tsc(&start_p);
 		clock_gettime(get_clockid(ptp_fd), &ts_ptp);
 		get_tsc(&end_p);
@@ -200,24 +229,23 @@ int main(int argc, char *argv[])
 			continue;
 		}
 
-		unsigned long long diff_real = end_r - start_r;
-		unsigned long long diff_ptp = end_p - start_p;
-
 		if (rstart.ru_nsignals != rend.ru_nsignals ||
 			rstart.ru_nvcsw != rend.ru_nvcsw ||
 			rstart.ru_nivcsw != rend.ru_nivcsw) {
-			fprintf(stderr, "signals or contextswitches increased during run, ignoring."
+			fprintf(stderr, "\nsignals or contextswitches increased during run, ignoring."
 				"signals %ld:%ld, nvcsw %ld:%ld nivcsw %ld:%ld\n",
 				rstart.ru_nsignals, rend.ru_nsignals,
 				rstart.ru_nvcsw, rend.ru_nvcsw,
 				rstart.ru_nivcsw, rend.ru_nivcsw);
 			continue;
 		}
-
+		unsigned long long diff_real = end_r - start_r;
+		unsigned long long diff_ptp = end_p - start_p;
 		long long diff_clocks = ts_diff(&ts_real_a, &ts_ptp);
-		long long diff_ab = ts_diff(&ts_real_a, &ts_real_b);
+		/* long long diff_ab = ts_diff(&ts_real_a, &ts_real_b); */
 		long long diff_bc = ts_diff(&ts_real_b, &ts_real_c);
 		long long diff_ac = ts_diff(&ts_real_a, &ts_real_c);
+
 
 		if (fp > 0)
 			fprintf(fp, "%ld.%ld,%llu,%llu,%lld,%llu,%lld,%f\n",
@@ -229,19 +257,12 @@ int main(int argc, char *argv[])
 				diff_ac,	/* real_tot_ns */
 				diff_clocks / 1e9);	/* clock_diff */
 
-		if (!(i%(US_IN_S / TIMEOUT_US))) {
-			printf("real: %lu %lu (tsc: %llu, ns: %lld)\n"
-				"ptp : %lu %lu (tsc: %llu, ns: %lld)\n"
-				"diff: %lld (%llu)\n",
-				ts_real_a.tv_sec, ts_real_a.tv_nsec, diff_real, diff_ab,
-				ts_ptp.tv_sec, ts_ptp.tv_nsec, diff_ptp, diff_bc,
-				diff_clocks,
-				end_p-start_r);
-		}
+		print_res(diff_real, diff_ptp, diff_clocks);
 
 		usleep(TIMEOUT_US);
 	}
 
+	printf("\n");
 	fclose(fp);
 	close(ptp_fd);
 	return ret;
