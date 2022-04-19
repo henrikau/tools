@@ -7,6 +7,6 @@ project(
 
 executable(
    'pcie_clock',
-   'src/ptp_getclock.c',
+   'src/ptp_getclock.c', 'src/ftrace.c',
    build_by_default: true,
 )

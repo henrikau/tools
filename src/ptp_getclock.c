@@ -14,11 +14,14 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <linux/if.h>
 #include <linux/ethtool.h>
 #include <linux/sockios.h>
+
+#include "ftrace.h"
 
 /* rusage */
 #include <sys/time.h>
@@ -90,8 +93,10 @@ static struct argp_option options[] = {
 	{"loops", 'l', "LOOPS", 0, "Number of loops to run (-1: default, infinite)"},
 	{"out", 'o', "OUTFILE", 0, "File to store output to (csv-format)"},
 	{"break", 'b', "TIMEOUT_US", 0, "Threshold (us) for stopping execution (and trace)"},
+	{"ftrace", 'F', 0, 0, "Enable FTRACE with testrun, default set with events enabled."},
 	{0}
 };
+
 static error_t parser(int key, char *arg, struct argp_state *state)
 {
 	int tmp;
@@ -104,6 +109,13 @@ static error_t parser(int key, char *arg, struct argp_state *state)
 			break;
 		}
 		breakval = tmp * 1000;
+		break;
+	case 'F':
+		if (!enable_ftrace()) {
+			fprintf(stderr, "Setting up ftrace FAILED\n");
+			exit(-1);
+		}
+		printf("Ftrace enabled\n");
 		break;
 	case 'i':
 		strncpy(ifname, arg, IFNAMSIZ-1);
@@ -124,6 +136,7 @@ static error_t parser(int key, char *arg, struct argp_state *state)
 }
 static struct argp argp = { options, parser };
 
+static char logmsg[256] = {0};
 void print_res(unsigned long long real,
 	unsigned long long ptp, unsigned long long diff_clocks)
 {
@@ -135,9 +148,7 @@ void print_res(unsigned long long real,
 		min_ns = ptp;
 	tot_ns += ptp;
 	n++;
-
-	if (!(n % 10)) {
-		printf("\r%09llu real: %.3f us, ptp: %.3f us max: %.3f us min: %.3f us avg: %.3f us (diff: %.6f)",
+	snprintf(logmsg, 256, "%09llu real: %.3f us, ptp: %.3f us max: %.3f us min: %.3f us avg: %.3f us (diff: %.6f)",
 			n,
 			(double)real / 1000.0,
 			(double)ptp / 1000.0,
@@ -145,7 +156,9 @@ void print_res(unsigned long long real,
 			(double)min_ns / 1000.0,
 			(double)tot_ns / n / 1000.0,
 			(double)diff_clocks / 1e9);
-
+	tag_ftrace(logmsg);
+	if (!(n % 10)) {
+		printf("\r%s", logmsg);
 		fflush(stdout);
 	}
 }
@@ -161,6 +174,7 @@ int main(int argc, char *argv[])
 
 	if (strlen(logfile) == 0)
 		strncpy(logfile, "hack_ptp.csv", OUTFILESZ-1);
+
 
 	/* Get PHC index */
 	struct ifreq req;
@@ -208,11 +222,33 @@ int main(int argc, char *argv[])
 	if (!set_rr(80))
 		exit(EXIT_FAILURE);
 	/* show info */
+	if (mlockall(MCL_CURRENT|MCL_FUTURE)) {
+		fprintf(stderr, "%s(): failed locking memory (%d, %s)\n",
+			__func__, errno, strerror(errno));
+	}
+
+	int dma_lat_fd = open("/dev/cpu_dma_latency", O_RDWR);
+	if (dma_lat_fd < 0) {
+		fprintf(stderr, "%s(): failed opening /dev/cpu_dma_latency, (%d, %s)\n",
+			__func__, errno, strerror(errno));
+	}
+	int lat_val = 0;
+	write(dma_lat_fd, &lat_val, sizeof(lat_val));
+	printf("%s(): Disabled cstate on CPU\n", __func__);
+
 	printf("iface: %s, ptp_path: %s\n", ifname, ptp_path);
 	printf("SCHED_RR:80, loops: %d\n", loops);
 
 	unsigned long long diff_real = 0;
 	unsigned long long diff_ptp = 0;
+
+	if (!start_ftrace()) {
+		fprintf(stderr, "Failed starting ftrace, aborting\n");
+		loops = 0; /* go straight to teardown */
+	}
+
+	char tracemsg[128] = {0};
+
 	for (size_t i = 0; i < loops; i++) {
 		/* Get rusage */
 		struct rusage rstart,rend;
@@ -237,6 +273,14 @@ int main(int argc, char *argv[])
 		get_tsc(&end_p);
 		clock_gettime(CLOCK_REALTIME, &ts_real_c);
 		diff_ptp = end_p - start_p;
+
+		if (diff_ptp > breakval) {
+			snprintf(tracemsg, 128, "Breakvalue (%llu) exceeded (%llu) after %ld iterations, stopping.", breakval, diff_ptp, i);
+			fprintf(stderr, "\n\n%s\n", tracemsg);
+			tag_ftrace(tracemsg);
+			stop_ftrace();
+			break;
+		}
 
 		/* Get rusage, make sure we haven't been preempted */
 		if (getrusage(RUSAGE_THREAD, &rend)) {
@@ -272,16 +316,11 @@ int main(int argc, char *argv[])
 				diff_clocks / 1e9);	/* clock_diff */
 
 		print_res(diff_real, diff_ptp, diff_clocks);
-		if (diff_ptp > breakval) {
-			fprintf(stderr, "\n\nBreakvalue (%llu) exceeded (%llu) after %ld iterations, stopping.\n", breakval, diff_ptp, i);
-
-
-			i = loops + 1;
-			continue;
-		}
 		usleep(TIMEOUT_US);
 	}
-
+	tag_ftrace("stopping trace");
+	stop_ftrace();
+	close(dma_lat_fd);
 	fprintf(stderr, "\n%09llu real: %.3f us, ptp: %.3f us max: %.3f us min: %.3f us avg: %.3f us\n",
 		n,
 		(double)diff_real / 1000.0,
