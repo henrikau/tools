@@ -267,27 +267,31 @@ int tx_loop(int sock, int payload_size)
 			running = false;
 			continue;
 		}
-		clock_gettime(CLOCK_MONOTONIC, &ts_now);
-		uint64_t ts_now_ns = ts_now.tv_nsec + ts_now.tv_sec * 1e9;
-		uint64_t ts_period_ns = ts_period.tv_nsec + ts_period.tv_sec * 1e9;
-		if (ts_now_ns > ts_period_ns) {
-			time_t timer;
-			char buffer[26];
-			struct tm* tm_info;
 
-			timer = time(NULL);
-			tm_info = localtime(&timer);
-			strftime(buffer, 26, "%Y-%m-%d %H:%M:%S", tm_info);
-			printf("%s: going to sleep for %d sec\n", buffer, period);
+		/* Periodically cycle traffic */
+		if (period > 0) {
+			clock_gettime(CLOCK_MONOTONIC, &ts_now);
+			uint64_t ts_now_ns = ts_now.tv_nsec + ts_now.tv_sec * 1e9;
+			uint64_t ts_period_ns = ts_period.tv_nsec + ts_period.tv_sec * 1e9;
+			if (ts_now_ns > ts_period_ns) {
+				time_t timer;
+				char buffer[26];
+				struct tm* tm_info;
 
-			ts_period.tv_sec += period;
-			clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts_period, NULL);
-			ts_period.tv_sec += period;
+				timer = time(NULL);
+				tm_info = localtime(&timer);
+				strftime(buffer, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+				printf("%s: going to sleep for %d sec\n", buffer, period);
 
-			timer = time(NULL);
-			tm_info = localtime(&timer);
-			strftime(buffer, 26, "%Y-%m-%d %H:%M:%S", tm_info);
-			printf("%s: waking from sleep after %d sec\n", buffer, period);
+				ts_period.tv_sec += period;
+				clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts_period, NULL);
+				ts_period.tv_sec += period;
+
+				timer = time(NULL);
+				tm_info = localtime(&timer);
+				strftime(buffer, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+				printf("%s: waking from sleep after %d sec\n", buffer, period);
+			}
 		}
 
 		/* dummy throttle. Sending max size frame takes approx
